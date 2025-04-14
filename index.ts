@@ -19,30 +19,47 @@ const album_dirs = filepaths
 const albums = await check_music_lib(album_dirs);
 save_albums(albums);
 
-// let mpv_process: ChildProcess = null;
 let mpv_pid = 0;
 server.post("/player/play/:id", async (ctx) => {
   if (mpv_pid) {
-    await Bun.$`kill -9 ${mpv_pid}`;
+    try {
+      await Bun.$`kill -9 ${mpv_pid}`;
+    } catch (e) {
+      // nothing to do
+    }
   }
   const id = ctx.req.param("id");
   const db_res: any = db.query("select dir from albums where id = " + id).get();
   const dir = Buffer.from(db_res.dir, "base64").toString("utf8");
   const mpv_process = Bun.spawn(["mpv", dir], {
-    stdout: "ignore",
-    stderr: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
   });
   mpv_pid = mpv_process.pid;
   return new Response(id + dir);
 });
 
 server.get("/albums", (ctx) => {
-  const res = db.query("select * from albums;").all() as album[];
-  const albums = res.map((x) => ({
+  const res: any = db.query("select * from albums;").all();
+  const albums = res.map((x: any) => ({
     name: Buffer.from(x.name, "base64").toString("utf8"),
     id: x.id,
   }));
   return ctx.json(albums);
+});
+
+server.get("/albums/:id", (ctx) => {
+  const res: any = db
+    .query("select * from albums where id = " + ctx.req.param("id"))
+    .get();
+  const { id, name, artist, tracks, format } = res;
+  return ctx.json({
+    id,
+    name: Buffer.from(name, "base64").toString("utf8"),
+    artist: Buffer.from(artist, "base64").toString("utf8"),
+    tracks: Buffer.from(tracks, "base64").toString("utf8"),
+    format,
+  });
 });
 
 server.get("/albums/:id/cover.jpg", (ctx) => {
@@ -118,8 +135,9 @@ function export_cover(trackpath: string, trackdir: string) {
 
 function save_albums(albums: album[]) {
   for (const album of albums) {
+    console.log(album);
     const { name, artist, tracks, dir, trackpaths, is_album, format } = album;
-    const insert_album_sql = `insert into albums(name, artist, tracks, dir, trackpaths, is_album, format) values('${Buffer.from(JSON.stringify(name)).toBase64()}', '${Buffer.from(JSON.stringify(artist)).toBase64()}', '${Buffer.from(JSON.stringify(tracks)).toBase64()}', '${Buffer.from(dir).toBase64()}', '${Buffer.from(JSON.stringify(trackpaths)).toBase64()}', ${is_album ? 1 : 0}, '${format}')`;
+    const insert_album_sql = `insert into albums(name, artist, tracks, dir, trackpaths, is_album, format) values('${Buffer.from(name).toBase64()}', '${Buffer.from(artist).toBase64()}', '${Buffer.from(JSON.stringify(tracks)).toBase64()}', '${Buffer.from(dir).toBase64()}', '${Buffer.from(JSON.stringify(trackpaths)).toBase64()}', ${is_album ? 1 : 0}, '${format}')`;
     db.query(insert_album_sql).run();
   }
 }
