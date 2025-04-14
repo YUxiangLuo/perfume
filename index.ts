@@ -4,20 +4,10 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import db from "./db";
 import type { album } from "./types";
-import type { ChildProcess } from "node:child_process";
 const server = new Hono();
 server.use("/*", cors());
 
-const music_dir = process.env.HOME + "/Music/";
-const filenames = await fs.readdir(music_dir);
-const filepaths = filenames.map((x) => music_dir + x);
-
-const album_dirs = filepaths
-  .filter((x) => !(x.endsWith(".flac") || x.endsWith(".jpg")))
-  .map((x) => x + "/");
-
-const albums = await check_music_lib(album_dirs);
-save_albums(albums);
+// await check_music_lib();
 
 let mpv_pid = 0;
 server.post("/player/play/:id", async (ctx) => {
@@ -32,20 +22,26 @@ server.post("/player/play/:id", async (ctx) => {
   const db_res: any = db.query("select dir from albums where id = " + id).get();
   const dir = Buffer.from(db_res.dir, "base64").toString("utf8");
   const mpv_process = Bun.spawn(["mpv", dir], {
-    stdout: "inherit",
-    stderr: "inherit",
+    stdout: "ignore",
+    stderr: "ignore",
   });
   mpv_pid = mpv_process.pid;
   return new Response(id + dir);
 });
 
 server.get("/albums", (ctx) => {
-  const res: any = db.query("select * from albums;").all();
+  const res: any = db.query("select * from albums order by id desc;").all();
   const albums = res.map((x: any) => ({
     name: Buffer.from(x.name, "base64").toString("utf8"),
+    artist: Buffer.from(x.artist, "base64").toString("utf8"),
     id: x.id,
   }));
   return ctx.json(albums);
+});
+
+server.post("/albums/update", async (ctx) => {
+  await update_music_lib();
+  return ctx.text("OK");
 });
 
 server.get("/albums/:id", (ctx) => {
@@ -62,20 +58,58 @@ server.get("/albums/:id", (ctx) => {
   });
 });
 
-server.get("/albums/:id/cover.jpg", (ctx) => {
+server.get("/albums/:id/cover.jpg", async (ctx) => {
   const id = ctx.req.param("id");
   const db_res: any = db
     .query(`select (dir) from albums where id = ${id}`)
     .get();
-  const cover_path =
+  let cover_path =
     Buffer.from(db_res.dir, "base64").toString("utf8") + "cover1.jpg";
+  if (!(await fs.exists(cover_path))) {
+    cover_path = "./cover.jpg";
+  }
+
   const res = new Response(Bun.file(cover_path).stream());
   return res;
 });
 
-async function check_music_lib(dirs: string[]): Promise<album[]> {
+async function update_music_lib() {
+  const music_dir = process.env.HOME + "/Music/";
+  const filenames = await fs.readdir(music_dir);
+  const filepaths = filenames.map((x) => music_dir + x);
+
+  const album_dirs = filepaths
+    .filter((x) => !(x.endsWith(".flac") || x.endsWith(".jpg")))
+    .map((x) => x + "/");
+  const old_album_dirs = db
+    .query("select (dir) from albums;")
+    .all()
+    .map((x: any) => x.dir)
+    .map((x) => Buffer.from(x, "base64").toString("utf8"));
+  const old_album_dirs_set = new Set(old_album_dirs);
+  const new_album_dirs: string[] = [];
+  for (const dir of album_dirs) {
+    if (!old_album_dirs_set.has(dir)) {
+      new_album_dirs.push(dir);
+    }
+  }
+  await process_album_dirs(new_album_dirs);
+}
+
+async function check_music_lib() {
+  const music_dir = process.env.HOME + "/Music/";
+  const filenames = await fs.readdir(music_dir);
+  const filepaths = filenames.map((x) => music_dir + x);
+
+  const album_dirs = filepaths
+    .filter((x) => !(x.endsWith(".flac") || x.endsWith(".jpg")))
+    .map((x) => x + "/");
+  await process_album_dirs(album_dirs);
+}
+
+async function process_album_dirs(album_dirs: string[]) {
   const albums: album[] = [];
-  for (const dir of dirs) {
+  for (const dir of album_dirs) {
     const tracks = (await fs.readdir(dir))
       .filter((x) => x.endsWith("flac"))
       .sort();
@@ -85,7 +119,7 @@ async function check_music_lib(dirs: string[]): Promise<album[]> {
     let artist_line = "";
     let audio_line = "";
     for (const trackpath of trackpaths) {
-      export_cover(trackpath, dir);
+      if (!(await fs.exists(dir + "cover1.jpg"))) export_cover(trackpath, dir);
       const p = Bun.spawn(["ffprobe", `${trackpath}`], {
         stderr: "pipe",
       });
@@ -106,8 +140,9 @@ async function check_music_lib(dirs: string[]): Promise<album[]> {
       }
       break;
     }
-    const name = title_line.split(":")[1]!.trim();
-    const artist = artist_line.split(":")[1]!.trim();
+    const name = title_line.split(":")[1]?.trim() || "UNKNOWN";
+    const artist = artist_line.split(":")[1]?.trim() || "UNKNOWN";
+    console.log(name, artist);
 
     const is_album = dir.includes(name) || dir.includes(artist);
     const format = audio_line.substring(audio_line.lastIndexOf(":") + 2);
@@ -122,7 +157,7 @@ async function check_music_lib(dirs: string[]): Promise<album[]> {
     };
     albums.push(album);
   }
-  return albums;
+  save_albums(albums);
 }
 
 function export_cover(trackpath: string, trackdir: string) {
@@ -135,7 +170,6 @@ function export_cover(trackpath: string, trackdir: string) {
 
 function save_albums(albums: album[]) {
   for (const album of albums) {
-    console.log(album);
     const { name, artist, tracks, dir, trackpaths, is_album, format } = album;
     const insert_album_sql = `insert into albums(name, artist, tracks, dir, trackpaths, is_album, format) values('${Buffer.from(name).toBase64()}', '${Buffer.from(artist).toBase64()}', '${Buffer.from(JSON.stringify(tracks)).toBase64()}', '${Buffer.from(dir).toBase64()}', '${Buffer.from(JSON.stringify(trackpaths)).toBase64()}', ${is_album ? 1 : 0}, '${format}')`;
     db.query(insert_album_sql).run();
