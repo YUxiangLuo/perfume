@@ -1,9 +1,12 @@
 import fs from "node:fs/promises";
 import { find_line_with_string } from "./lib";
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import db from "./db";
 import type { album } from "./types";
+import type { ChildProcess } from "node:child_process";
 const server = new Hono();
+server.use("/*", cors());
 
 const music_dir = process.env.HOME + "/Music/";
 const filenames = await fs.readdir(music_dir);
@@ -16,9 +19,30 @@ const album_dirs = filepaths
 const albums = await check_music_lib(album_dirs);
 save_albums(albums);
 
+// let mpv_process: ChildProcess = null;
+let mpv_pid = 0;
+server.post("/player/play/:id", async (ctx) => {
+  if (mpv_pid) {
+    await Bun.$`kill -9 ${mpv_pid}`;
+  }
+  const id = ctx.req.param("id");
+  const db_res: any = db.query("select dir from albums where id = " + id).get();
+  const dir = Buffer.from(db_res.dir, "base64").toString("utf8");
+  const mpv_process = Bun.spawn(["mpv", dir], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  mpv_pid = mpv_process.pid;
+  return new Response(id + dir);
+});
+
 server.get("/albums", (ctx) => {
-  const res = db.query("select * from albums;").all();
-  return ctx.json(res);
+  const res = db.query("select * from albums;").all() as album[];
+  const albums = res.map((x) => ({
+    name: Buffer.from(x.name, "base64").toString("utf8"),
+    id: x.id,
+  }));
+  return ctx.json(albums);
 });
 
 server.get("/albums/:id/cover.jpg", (ctx) => {

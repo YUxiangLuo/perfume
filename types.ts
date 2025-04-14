@@ -1,4 +1,5 @@
 export type album = {
+  id?: number,
   name: string;
   artist: string;
   tracks: string[];
