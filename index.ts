@@ -110,11 +110,7 @@ async function check_music_lib() {
 async function process_album_dirs(album_dirs: string[]) {
   const albums: album[] = [];
   for (const dir of album_dirs) {
-    const tracks = (await fs.readdir(dir))
-      .filter((x) => x.endsWith("flac"))
-      .sort();
-    const trackpaths = tracks.map((x) => dir + x);
-
+    const { tracks, trackpaths } = await read_tracks(dir);
     let title_line = "";
     let artist_line = "";
     let audio_line = "";
@@ -158,6 +154,30 @@ async function process_album_dirs(album_dirs: string[]) {
     albums.push(album);
   }
   save_albums(albums);
+}
+
+export async function read_tracks(dir: string): Promise<{
+  tracks: string[];
+  trackpaths: string[];
+}> {
+  let tracks = (await fs.readdir(dir)).filter((x) => !x.endsWith(".jpg"));
+  if (tracks[0]?.endsWith(".flac")) {
+    tracks = tracks.filter((x) => x.endsWith("flac")).sort();
+    return {
+      tracks,
+      trackpaths: tracks.map((track) => dir + track),
+    };
+  } else {
+    let tracks_: string[] = [];
+    let trackpaths_: string[] = [];
+    for (const inner_dir of tracks) {
+      const { tracks, trackpaths } = await read_tracks(dir + inner_dir + "/");
+
+      tracks_ = [...tracks_, ...tracks];
+      trackpaths_ = [...trackpaths_, ...trackpaths];
+    }
+    return { tracks: tracks_, trackpaths: trackpaths_ };
+  }
 }
 
 function export_cover(trackpath: string, trackdir: string) {
