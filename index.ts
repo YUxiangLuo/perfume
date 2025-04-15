@@ -60,9 +60,7 @@ server.get("/albums/:id", (ctx) => {
 
 server.get("/albums/:id/cover.jpg", async (ctx) => {
   const id = ctx.req.param("id");
-  const db_res: any = db
-    .query(`select (dir) from albums where id = ${id}`)
-    .get();
+  const db_res: any = db.query(`select dir from albums where id = ${id}`).get();
   let cover_path =
     Buffer.from(db_res.dir, "base64").toString("utf8") + "cover1.jpg";
   if (!(await fs.exists(cover_path))) {
@@ -74,12 +72,15 @@ server.get("/albums/:id/cover.jpg", async (ctx) => {
 });
 
 async function update_music_lib() {
+  // todo: 检测旧的album是否有tracks数量的变化
   const music_dir = process.env.HOME + "/Music/";
   const filenames = await fs.readdir(music_dir);
   const filepaths = filenames.map((x) => music_dir + x);
 
   const album_dirs = filepaths
-    .filter((x) => !(x.endsWith(".flac") || x.endsWith(".jpg")))
+    .filter(
+      (x) => !(x.endsWith(".flac") || x.endsWith(".jpg") || x.endsWith(".m4a")),
+    )
     .map((x) => x + "/");
   const old_album_dirs = db
     .query("select (dir) from albums;")
@@ -94,6 +95,35 @@ async function update_music_lib() {
     }
   }
   await process_album_dirs(new_album_dirs);
+
+  const old_albums: any[] = db
+    .query("select id, dir, tracks from albums;")
+    .all();
+  for (const album of old_albums) {
+    album.dir = Buffer.from(album.dir, "base64").toString("utf8");
+    if (!(await fs.exists(album.dir))) {
+      console.log(album.dir);
+      db.query("delete from albums where id = " + album.id).run();
+    } else {
+      const old_tracks = JSON.parse(
+        Buffer.from(album.tracks, "base64").toString("utf8"),
+      );
+      const new_tracks = (await read_tracks(album.dir)).tracks;
+      const ok = old_tracks.length === new_tracks.length;
+      if (!ok) {
+        console.log(
+          "Tracks mismatch for album:",
+          album.dir,
+          "new: ",
+          new_tracks.length,
+          "old: ",
+          old_tracks.length,
+        );
+        db.query("delete from albums where id = " + album.id).run();
+        await process_album_dirs([album.dir]);
+      }
+    }
+  }
 }
 
 async function check_music_lib() {
@@ -102,7 +132,9 @@ async function check_music_lib() {
   const filepaths = filenames.map((x) => music_dir + x);
 
   const album_dirs = filepaths
-    .filter((x) => !(x.endsWith(".flac") || x.endsWith(".jpg")))
+    .filter(
+      (x) => !(x.endsWith(".flac") || x.endsWith(".jpg") || x.endsWith(".m4a")),
+    )
     .map((x) => x + "/");
   await process_album_dirs(album_dirs);
 }
@@ -161,8 +193,10 @@ export async function read_tracks(dir: string): Promise<{
   trackpaths: string[];
 }> {
   let tracks = (await fs.readdir(dir)).filter((x) => !x.endsWith(".jpg"));
-  if (tracks[0]?.endsWith(".flac")) {
-    tracks = tracks.filter((x) => x.endsWith("flac")).sort();
+  if (tracks[0]?.endsWith(".flac") || tracks[0]?.endsWith(".m4a")) {
+    tracks = tracks
+      .filter((x) => x.endsWith("flac") || x.endsWith("m4a"))
+      .sort();
     return {
       tracks,
       trackpaths: tracks.map((track) => dir + track),
